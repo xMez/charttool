@@ -7,7 +7,7 @@ import requests
 import typer
 import yt_dlp
 
-from parsing import parse_title
+from charttool.parsing import parse_title
 
 LOG = logging.getLogger(__name__)
 

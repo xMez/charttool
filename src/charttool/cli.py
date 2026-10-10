@@ -122,7 +122,7 @@ def create(  # noqa: PLR0915
 
     match urlparse(url).netloc:
         case "www.youtube.com" | "youtube.com" | "youtu.be":
-            from youtube import download_audio, download_bg, get_title  # noqa: PLC0415
+            from charttool.youtube import download_audio, download_bg, get_title  # noqa: PLC0415
         case _:
             typer.echo("Error: Non supported URL", err=True)
             raise typer.Exit(1)
