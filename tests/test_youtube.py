@@ -1,7 +1,7 @@
 """Mock media integrations while verifying conversion and fallback behavior."""
 
 import subprocess
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import requests
 
@@ -38,27 +38,85 @@ class YoutubeTests(OfflineTestCase):
             patch("charttool.youtube.yt_dlp.YoutubeDL") as downloader,
             patch("charttool.youtube.subprocess.run") as convert,
         ):
+            convert.return_value.stderr = "Integrated loudness:\n    I: -12.4 LUFS\n"
             downloader.return_value.__enter__.return_value.prepare_filename.return_value = str(
                 source
             )
             self.assertTrue(download_audio("https://youtu.be/test", destination))
-        convert.assert_called_once_with(
+        self.assertEqual(
+            convert.call_args_list,
             [
-                "ffmpeg",
-                "-y",
-                "-i",
-                str(source),
-                "-af",
-                "loudnorm=I=-8:TP=-1.5:LRA=7",
-                "-c:a",
-                "libvorbis",
-                "-q:a",
-                "7",
-                str(destination),
+                call(
+                    [
+                        "ffmpeg",
+                        "-hide_banner",
+                        "-nostats",
+                        "-i",
+                        str(source),
+                        "-af",
+                        "ebur128=framelog=verbose",
+                        "-f",
+                        "null",
+                        "-",
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ),
+                call(
+                    [
+                        "ffmpeg",
+                        "-y",
+                        "-i",
+                        str(source),
+                        "-af",
+                        "volume=6.4dB",
+                        "-c:a",
+                        "libvorbis",
+                        "-q:a",
+                        "7",
+                        str(destination),
+                    ],
+                    check=True,
+                ),
             ],
-            check=True,
         )
         self.assertFalse(source.exists())
+
+    def test_loudness_gain_attenuates_loud_audio_and_handles_silence(self):
+        for loudness, expected_filter in (
+            ("-3", "volume=-3dB"),
+            ("-6", "volume=0dB"),
+            ("-inf", "volume=0dB"),
+        ):
+            with (
+                self.subTest(loudness=loudness),
+                patch("charttool.youtube.yt_dlp.YoutubeDL") as downloader,
+                patch("charttool.youtube.subprocess.run") as convert,
+            ):
+                downloader.return_value.__enter__.return_value.prepare_filename.return_value = str(
+                    self.root / "Song.webm"
+                )
+                convert.return_value.stderr = f"I: {loudness} LUFS\n"
+                self.assertTrue(download_audio("unused", self.root / "Song.ogg"))
+                command = convert.call_args.args[0]
+                self.assertEqual(command[command.index("-af") + 1], expected_filter)
+
+    def test_missing_loudness_measurement_preserves_original(self):
+        source = self.root / "Song.webm"
+        source.write_bytes(b"source")
+        with (
+            patch("charttool.youtube.yt_dlp.YoutubeDL") as downloader,
+            patch("charttool.youtube.subprocess.run") as convert,
+            self.assertLogs("charttool.youtube", level="ERROR"),
+        ):
+            downloader.return_value.__enter__.return_value.prepare_filename.return_value = str(
+                source
+            )
+            convert.return_value.stderr = "No loudness summary"
+            self.assertFalse(download_audio("unused", self.root / "Song.ogg"))
+        convert.assert_called_once()
+        self.assertTrue(source.exists())
 
     def test_failed_conversion_preserves_original(self):
         source = self.root / "Song.webm"
@@ -77,6 +135,26 @@ class YoutubeTests(OfflineTestCase):
             self.assertFalse(
                 download_audio("https://youtu.be/test", self.root / "Song.ogg")
             )
+        self.assertTrue(source.exists())
+
+    def test_failed_encoding_preserves_original(self):
+        source = self.root / "Song.webm"
+        source.write_bytes(b"source")
+        with (
+            patch("charttool.youtube.yt_dlp.YoutubeDL") as downloader,
+            patch(
+                "charttool.youtube.subprocess.run",
+                side_effect=[
+                    Mock(stderr="I: -12.4 LUFS\n"),
+                    subprocess.CalledProcessError(1, "ffmpeg"),
+                ],
+            ),
+            self.assertLogs("charttool.youtube", level="ERROR"),
+        ):
+            downloader.return_value.__enter__.return_value.prepare_filename.return_value = str(
+                source
+            )
+            self.assertFalse(download_audio("unused", self.root / "Song.ogg"))
         self.assertTrue(source.exists())
 
     def test_thumbnail_fallback_writes_standard_image(self):

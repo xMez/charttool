@@ -1,7 +1,9 @@
 """Functions for interacting with YouTube."""
 
 import logging
+import math
 from pathlib import Path
+import re
 import subprocess
 
 import requests
@@ -64,13 +66,37 @@ def download_audio(url: str, output_path: Path) -> bool:
     # Convert to OGG Vorbis with quality 7
     try:
         typer.echo("Converting audio!")
+        measurement = subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-nostats",
+                "-i",
+                str(downloaded_file),
+                "-af",
+                "ebur128=framelog=verbose",
+                "-f",
+                "null",
+                "-",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        readings = re.findall(r"I:\s*([-+\d.inf]+)\s+LUFS", measurement.stderr)
+        if not readings:
+            raise ValueError("ffmpeg did not report integrated loudness")
+        integrated_loudness = float(readings[-1])
+        # Apply only constant gain; no peak limiting or loudness-range processing.
+        # Silence has no finite loudness and should retain its original gain.
+        gain = -6 - integrated_loudness if math.isfinite(integrated_loudness) else 0
         cmd = [
             "ffmpeg",
             "-y",
             "-i",
             str(downloaded_file),
             "-af",
-            "loudnorm=I=-8:TP=-1.5:LRA=7",
+            f"volume={gain:g}dB",
             "-c:a",
             "libvorbis",
             "-q:a",
@@ -78,7 +104,7 @@ def download_audio(url: str, output_path: Path) -> bool:
             str(output_path),
         ]
         subprocess.run(cmd, check=True)
-    except subprocess.CalledProcessError as e:
+    except (subprocess.CalledProcessError, ValueError) as e:
         LOG.exception("Failed to convert audio to OGG Vorbis")
         typer.echo(f"Error converting audio: {e}", err=True)
         return False
