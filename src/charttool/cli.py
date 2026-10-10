@@ -2,7 +2,9 @@
 
 import configparser
 import os
+import platform
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -25,7 +27,7 @@ SSC_TEMPLATE = """\
 #MUSIC:{music_file};
 #BANNER:bn.jpg;
 #BACKGROUND:bg.jpg;
-#CDTITLE:cdtitle.png;
+#CDTITLE:../cdtitle.png;
 #SAMPLESTART:;
 #SAMPLELENGTH:;
 #SELECTABLE:YES;
@@ -37,7 +39,9 @@ SSC_TEMPLATE = """\
 //--------------- {step_type} - {creator} ----------------
 #NOTEDATA:;
 #STEPSTYPE:{step_type};
-#DESCRIPTION:{creator};
+#CREDIT:{creator};
+#DESCRIPTION:;
+#CHARTNAME:;
 #DIFFICULTY:{difficulty};
 #METER:1;
 #RADARVALUES:0,0,0,0,0;
@@ -64,16 +68,16 @@ class Config:
             return self.pump_dir
         if step_type.startswith("dance"):
             return self.dance_dir
-        return self.pump_dir  # Default to pump
+        return self.dance_dir  # Default to pump
 
 
 def load_config() -> Config:
     """Load configuration from file or return defaults."""
     parser = configparser.ConfigParser()
-    config_dir = Path(
-        platformdirs.user_config_dir("charttool", appauthor=False, ensure_exists=True),
-    )
-    config_path = config_dir / "config.ini"
+    # config_dir = Path(
+    #     platformdirs.user_config_dir("charttool", appauthor=False, ensure_exists=True),
+    # )
+    config_path = Path() / "config.ini"
 
     if not config_path.exists():
         # Create default config file
@@ -109,16 +113,29 @@ def sanitize_filename(filename: str) -> str:
 
 @app.command()
 def create(  # noqa: PLR0915
-    url: str = typer.Argument(..., help="YouTube URL of the song"),
+    url: str | None = typer.Argument(None, help="YouTube URL of the song"),
     output_dir: str | None = typer.Option(
         None,
         "--output",
         "-o",
         help="Output directory (defaults to config or song title)",
     ),
+    cfg: bool | None = typer.Option(
+        None,
+        "--config",
+        "-c",
+        help="Show active config and config file location",
+    )
 ) -> None:
     """Create an SSC file from a YouTube video."""
     config = load_config()
+    if cfg is not None:
+        typer.echo((Path() / "config.ini").absolute())
+        typer.echo(config)
+        return
+
+    if url is None:
+        url = typer.prompt("YouTube URL: ", type=str)
 
     match urlparse(url).netloc:
         case "www.youtube.com" | "youtube.com" | "youtu.be":
@@ -164,7 +181,7 @@ def create(  # noqa: PLR0915
     )
 
     # Get step type
-    step_types = {"1": "pump-single", "2": "dance-single", "3": "pump-double"}
+    step_types = {"1": "dance-single", "2": "pump-single", "3": "pump-double"}
 
     step_choice = typer.prompt(
         typer.style("\nSelect step type:", fg=BLUE)
@@ -245,7 +262,13 @@ def create(  # noqa: PLR0915
 
     typer.echo(f'\nFiles created successfully in directory: "{output_path.absolute()}"')
 
-    os.startfile(ssc_path)  # noqa: S606
+    system = platform.system()
+    if system == "Windows":
+        os.startfile(ssc_path)
+    elif system == "Darwin":  # macOS
+        subprocess.run(["open", ssc_path])
+    else:  # Linux
+        subprocess.run(["xdg-open", ssc_path])
 
 
 if __name__ == "__main__":
